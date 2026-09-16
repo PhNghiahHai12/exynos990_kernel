@@ -2,6 +2,11 @@ name: Build ArtisanKRNL
 
 on:
   workflow_dispatch:
+    inputs:      
+      tag:
+        description: 'Release Tag (OneUI8-990)'
+        required: true        
+        default: 'OneUI8-990'
 
 jobs:
   build:
@@ -19,23 +24,45 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Set up build environment
-        run: |
-          sudo apt update
-          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            p7zip-full jq attr ccache clang ffmpeg golang \
-            libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
-            libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
-            curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils
-          sudo modprobe erofs f2fs
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
-          sudo apt clean
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+
+      - name: Set up build environment
+        run: |
+          echo "::group:: Installing dependencies and tools"
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+            p7zip-full jq attr ccache clang ffmpeg golang \
+            libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
+            libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
+            curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils \
+            llvm lld
+          sudo modprobe erofs f2fs
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "::endgroup::"
+
+      - name: Ensure Toolchain Exists (Fix Clang download error)
+        run: |
+          mkdir -p toolchain/clang_14
+          if [ -z "$(ls -A toolchain/clang_14)" ]; then
+            echo "Toolchain missing, cloning reliable clang-r450784d mirror..."
+            git clone --depth=1 https://gitlab.com/Kenvyra/android_prebuilts_clang_host_linux-x86.git /tmp/clang-repo || true
+            if [ -d "/tmp/clang-repo/clang-r450784d" ]; then
+              cp -r /tmp/clang-repo/clang-r450784d/* toolchain/clang_14/
+            else
+              git clone --depth=1 https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-33.git /tmp/clang-repo2 || true
+              if [ -d "/tmp/clang-repo2/clang-r450784d" ]; then
+                cp -r /tmp/clang-repo2/clang-r450784d/* toolchain/clang_14/
+              fi
+            fi
+          fi
+          echo "=== Verifying toolchain bin ==="
+          ls -l toolchain/clang_14/bin/clang || echo "Warning: clang binary not found yet"
 
       - name: Make build script executable
         run: chmod +x build.sh
@@ -47,5 +74,6 @@ jobs:
       - name: Upload artifact (${{ matrix.target }})
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ matrix.target }}
+          name: ArtisanKRNL-${{ matrix.target }}-zip
           path: build/out/${{ matrix.target }}/*.zip
+          compression-level: 6
