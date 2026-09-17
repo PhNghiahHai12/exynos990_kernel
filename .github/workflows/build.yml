@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:      
       tag:
-        description: 'Release Tag (OneUI8-990)'
+        description: 'Release Tag Name'
         required: true        
-        default: 'OneUI8-990'
+        default: 'ArtisanKRNL-Release'
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # Use Ubuntu 22.04 to ensure compatibility with older LLVM/Clang toolchains
+    runs-on: ubuntu-22.04
 
     strategy:
       fail-fast: false
@@ -18,39 +19,39 @@ jobs:
         target: [c2s, c2slte, c1s, c1slte, z3s, y2s, y2slte, x1s, x1slte, r8s]
 
     steps:
-      - name: Checkout source
+      - name: Checkout source code
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Free disk space
+      - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           sudo apt-get clean
 
-      - name: Set up build environment
+      - name: Initialize build environment
         run: |
-          echo "::group:: Installing dependencies and tools"
+          echo "::group::Installing build dependencies"
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
             p7zip-full jq attr ccache clang ffmpeg golang \
             libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
             libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
             curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils \
-            llvm lld
+            libc++1 libc++abi1 llvm lld
           sudo modprobe erofs f2fs
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           echo "::endgroup::"
 
-      - name: Ensure Toolchain Exists (Fix Clang download error)
+      - name: Verify and configure Clang toolchain
         run: |
           mkdir -p toolchain/clang_14
           if [ -z "$(ls -A toolchain/clang_14)" ]; then
-            echo "Toolchain missing, cloning reliable clang-r450784d mirror..."
+            echo "Toolchain directory is empty. Cloning a reliable mirror..."
             git clone --depth=1 https://gitlab.com/Kenvyra/android_prebuilts_clang_host_linux-x86.git /tmp/clang-repo || true
             if [ -d "/tmp/clang-repo/clang-r450784d" ]; then
               cp -r /tmp/clang-repo/clang-r450784d/* toolchain/clang_14/
@@ -61,19 +62,73 @@ jobs:
               fi
             fi
           fi
-          echo "=== Verifying toolchain bin ==="
-          ls -l toolchain/clang_14/bin/clang || echo "Warning: clang binary not found yet"
+          echo "Verifying toolchain binaries..."
+          ls -l toolchain/clang_14/bin/clang || echo "Warning: Clang binary check failed."
 
-      - name: Make build script executable
+      - name: Grant execution permissions
         run: chmod +x build.sh
 
-      - name: Build kernel (${{ matrix.target }})
+      - name: Execute kernel compilation (${{ matrix.target }})
         run: |
           ./build.sh -m ${{ matrix.target }} -k y -r n
 
-      - name: Upload artifact (${{ matrix.target }})
+      - name: Upload compiled artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ArtisanKRNL-${{ matrix.target }}-zip
           path: build/out/${{ matrix.target }}/*.zip
           compression-level: 6
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Retrieve workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: raw_artifacts
+
+      - name: Consolidate build files
+        run: |
+          mkdir -p final_artifacts
+          if [ -d "raw_artifacts" ]; then
+            find raw_artifacts/ -name "*.zip" -exec cp {} final_artifacts/ \;
+          fi
+          echo "Prepared files for release:"
+          ls -l final_artifacts/
+
+      - name: Parse release tag
+        id: tag_parser
+        run: |
+          SAFE_TAG=$(echo "${{ github.event.inputs.tag }}" | sed 's/[\/\\:*?"<>|]/-/g')
+          echo "SAFE_TAG=$SAFE_TAG" >> $GITHUB_ENV
+
+      - name: Publish GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ env.SAFE_TAG }}
+          name: "Release: ${{ env.SAFE_TAG }}"
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "final_artifacts/*.zip"
+          body: |
+            ## ArtisanKRNL Official Build
+            
+            Automated kernel compilation executed via GitHub Actions.
+            
+            ### Build Information
+            * **Build Number:** `${{ github.run_number }}`
+            * **Commit SHA:** `${{ github.sha }}`
+            * **Architecture:** Exynos 990 (Non-GKI)
+            
+            ### Supported Devices
+            * **Galaxy S20 Series:** x1s, x1slte, y2s, y2slte, z3s
+            * **Galaxy Note 20 Series:** c1s, c1slte, c2s, c2slte
+            * **Galaxy S20 FE:** r8s
+            
+            *Note: Please verify your exact device codename and firmware base before proceeding with the installation.*
