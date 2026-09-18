@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Release Tag Name'
         required: true        
-        default: 'ArtisanKRNL-Performance'
+        default: 'ArtisanKRNL-SuSFS-v2.2.0'
 
 jobs:
   build:
@@ -65,38 +65,18 @@ jobs:
           echo "Verifying toolchain binaries..."
           ls -l toolchain/clang_14/bin/clang || echo "Warning: Clang binary check failed."
 
+      - name: Spoof SUSFS version to v2.2.0
+        run: |
+          echo "Spoofing SUSFS version to v2.2.0..."
+          if [ -f "include/linux/susfs.h" ]; then
+            sed -i 's/#define SUSFS_VERSION.*/#define SUSFS_VERSION "v2.2.0"/g' include/linux/susfs.h
+            grep "SUSFS_VERSION" include/linux/susfs.h
+          else
+            echo "Warning: include/linux/susfs.h not found. Spoofing skipped."
+          fi
+
       - name: Grant execution permissions
         run: chmod +x build.sh
-
-      - name: Apply Exynos 990 Performance Optimizations
-        run: |
-          echo "Injecting performance tweaks into all defconfigs..."
-          for conf in arch/arm64/configs/*_defconfig; do
-            if [ -f "$conf" ]; then
-              # 1. Disable Samsung and Exynos hardware debugging layers
-              sed -i 's/CONFIG_SEC_DEBUG=y/# CONFIG_SEC_DEBUG is not set/' "$conf"
-              sed -i 's/CONFIG_EXYNOS_DEBUG=y/# CONFIG_EXYNOS_DEBUG is not set/' "$conf"
-              sed -i 's/CONFIG_MALI_EXYNOS_DEBUG=y/# CONFIG_MALI_EXYNOS_DEBUG is not set/' "$conf"
-              
-              # 2. Disable generic kernel debugging, tracing, and watchdogs
-              sed -i 's/CONFIG_DEBUG_KERNEL=y/# CONFIG_DEBUG_KERNEL is not set/' "$conf"
-              sed -i 's/CONFIG_SCHED_DEBUG=y/# CONFIG_SCHED_DEBUG is not set/' "$conf"
-              sed -i 's/CONFIG_FTRACE=y/# CONFIG_FTRACE is not set/' "$conf"
-              sed -i 's/CONFIG_LOCKUP_DETECTOR=y/# CONFIG_LOCKUP_DETECTOR is not set/' "$conf"
-              sed -i 's/CONFIG_SOFTLOCKUP_DETECTOR=y/# CONFIG_SOFTLOCKUP_DETECTOR is not set/' "$conf"
-              sed -i 's/CONFIG_DETECT_HUNG_TASK=y/# CONFIG_DETECT_HUNG_TASK is not set/' "$conf"
-              sed -i 's/CONFIG_WQ_WATCHDOG=y/# CONFIG_WQ_WATCHDOG is not set/' "$conf"
-              
-              # 3. Enable ThinLTO (Link-Time Optimization) for Clang
-              sed -i 's/CONFIG_LTO_NONE=y/# CONFIG_LTO_NONE is not set/' "$conf"
-              echo "CONFIG_LTO_CLANG_THIN=y" >> "$conf"
-              
-              # 4. Increase Timer Tick Rate to 1000Hz
-              sed -i 's/CONFIG_HZ_250=y/# CONFIG_HZ_250 is not set/' "$conf"
-              echo "CONFIG_HZ_1000=y" >> "$conf"
-              sed -i 's/CONFIG_HZ=250/CONFIG_HZ=1000/' "$conf"
-            fi
-          done
 
       - name: Execute kernel compilation (${{ matrix.target }})
         run: |
@@ -126,6 +106,8 @@ jobs:
           if [ -d "raw_artifacts" ]; then
             find raw_artifacts/ -name "*.zip" -exec cp {} final_artifacts/ \;
           fi
+          echo "Prepared files for release:"
+          ls -l final_artifacts/
 
       - name: Parse release tag
         id: tag_parser
@@ -145,15 +127,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           artifacts: "final_artifacts/*.zip"
           body: |
-            ## ArtisanKRNL Performance Build
+            ## ArtisanKRNL Official Build
             
             Automated kernel compilation executed via GitHub Actions.
-            Includes deep Exynos 990 performance optimizations (LTO, 1000Hz, Debugging disabled).
             
             ### Build Information
             * **Build Number:** `${{ github.run_number }}`
             * **Commit SHA:** `${{ github.sha }}`
             * **Architecture:** Exynos 990 (Non-GKI)
+            * **Features:** Integrated SuSFS (Spoofed to v2.2.0)
             
             ### Supported Devices
             * **Galaxy S20 Series:** x1s, x1slte, y2s, y2slte, z3s
