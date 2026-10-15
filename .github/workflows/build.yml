@@ -10,6 +10,7 @@ on:
 
 jobs:
   build:
+    # Use Ubuntu 22.04 to ensure compatibility with older LLVM/Clang toolchains
     runs-on: ubuntu-22.04
 
     strategy:
@@ -74,33 +75,10 @@ jobs:
             echo "Warning: include/linux/susfs.h not found. Spoofing skipped."
           fi
 
-      - name: Configure Kernel (NHKRNL) and Link SuSFS Source
+      - name: Set Kernel Localversion (NHKRNL)
         run: |
-          echo "Setting LOCALVERSION to -NHKRNL in defconfigs..."
+          echo "Setting LOCALVERSION to -NHKRNL..."
           find arch/arm64/configs/ -type f -name "*defconfig" -exec sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-NHKRNL"/' {} +
-
-          echo "Locating and linking susfs.c into fs/..."
-          # Đảm bảo susfs.c nằm trong fs/
-          if [ ! -f "fs/susfs.c" ]; then
-            SUSFS_SRC=$(find . -maxdepth 3 -name "susfs.c" | head -n 1)
-            if [ -n "$SUSFS_SRC" ]; then
-              cp "$SUSFS_SRC" fs/susfs.c
-              echo "Copied $SUSFS_SRC to fs/susfs.c"
-            fi
-          fi
-
-          # Thêm luật biên dịch susfs.o vào fs/Makefile
-          if [ -f "fs/Makefile" ] && ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile; then
-            echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-            echo "Added obj-\$(CONFIG_KSU_SUSFS) += susfs.o into fs/Makefile"
-          fi
-
-          # Tự động chèn susfs_init() vào fs/filesystems.c nếu chưa có
-          if [ -f "fs/filesystems.c" ] && ! grep -q "susfs_init" fs/filesystems.c; then
-            sed -i '/sysfs_init()/a \
-  #ifdef CONFIG_KSU_SUSFS\n\textern void susfs_init(void);\n\tsusfs_init();\n#endif' fs/filesystems.c
-            echo "Hooked susfs_init() into fs/filesystems.c"
-          fi
 
       - name: Grant execution permissions
         run: chmod +x build.sh
