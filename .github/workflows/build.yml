@@ -2,16 +2,15 @@ name: Build PNHKRNL
 
 on:
   workflow_dispatch:
-    inputs:      
+    inputs:
       tag:
         description: 'Release Tag Name'
-        required: true        
+        required: true
         default: 'v1.0.2-susfs'
 
 jobs:
   build:
-    # Use Ubuntu 22.04 to ensure compatibility with older LLVM/Clang toolchains
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
@@ -19,80 +18,63 @@ jobs:
         target: [c2s, c2slte, c1s, c1slte, z3s, y2s, y2slte, x1s, x1slte, r8s]
 
     steps:
-      - name: Checkout source code
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Free up disk space
+      - name: Set up build environment
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          sudo apt-get clean
-
-      - name: Initialize build environment
-        run: |
-          echo "::group::Installing build dependencies"
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+          sudo apt update
+          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
             p7zip-full jq attr ccache clang ffmpeg golang \
             libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
             libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
-            curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils \
-            libc++1 libc++abi1 llvm lld
+            curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils
           sudo modprobe erofs f2fs
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          echo "::endgroup::"
 
-      - name: Verify and configure Clang toolchain
+      - name: Free disk space
         run: |
-          mkdir -p toolchain/clang_14
-          if [ -z "$(ls -A toolchain/clang_14)" ]; then
-            echo "Toolchain directory is empty. Cloning a reliable mirror..."
-            git clone --depth=1 https://gitlab.com/Kenvyra/android_prebuilts_clang_host_linux-x86.git /tmp/clang-repo || true
-            if [ -d "/tmp/clang-repo/clang-r450784d" ]; then
-              cp -r /tmp/clang-repo/clang-r450784d/* toolchain/clang_14/
-            else
-              git clone --depth=1 https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-33.git /tmp/clang-repo2 || true
-              if [ -d "/tmp/clang-repo2/clang-r450784d" ]; then
-                cp -r /tmp/clang-repo2/clang-r450784d/* toolchain/clang_14/
-              fi
-            fi
-          fi
-          echo "Verifying toolchain binaries..."
-          ls -l toolchain/clang_14/bin/clang || echo "Warning: Clang binary check failed."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo apt clean
 
-      - name: Spoof SUSFS version to v2.2.0
+      - name: Setup SuSFS & Kernel Name (NHKRNL)
         run: |
-          echo "Spoofing SUSFS version to v2.2.0..."
-          if [ -f "include/linux/susfs.h" ]; then
-            sed -i 's/#define SUSFS_VERSION.*/#define SUSFS_VERSION "v2.2.0"/g' include/linux/susfs.h
-            grep "SUSFS_VERSION" include/linux/susfs.h
-          else
-            echo "Warning: include/linux/susfs.h not found. Spoofing skipped."
-          fi
-
-      - name: Set Kernel Localversion (NHKRNL)
-        run: |
+          # 1. Đặt tên hiển thị trong Cài đặt phần mềm là -NHKRNL
           echo "Setting LOCALVERSION to -NHKRNL..."
           find arch/arm64/configs/ -type f -name "*defconfig" -exec sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-NHKRNL"/' {} +
 
-      - name: Grant execution permissions
+          # 2. Spoof phiên bản SuSFS
+          if [ -f "include/linux/susfs.h" ]; then
+            echo "Spoofing SUSFS_VERSION to v2.2.0..."
+            sed -i 's/#define SUSFS_VERSION.*/#define SUSFS_VERSION "v2.2.0"/g' include/linux/susfs.h
+          fi
+
+          # 3. Đảm bảo susfs.c được Kbuild gọi biên dịch qua susfs.o
+          if [ -f "fs/Makefile" ]; then
+            if ! grep -q "susfs.o" fs/Makefile; then
+              echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+              echo "Added susfs.o to fs/Makefile"
+            fi
+          fi
+
+      - name: Make build script executable
         run: chmod +x build.sh
 
-      - name: Execute kernel compilation (${{ matrix.target }})
+      - name: Build kernel (${{ matrix.target }})
         run: |
+          # Gọi biên dịch kernel kèm KernelSU (-k y)
           ./build.sh -m ${{ matrix.target }} -k y -r n
 
-      - name: Upload compiled artifacts
+      - name: Upload artifact (${{ matrix.target }})
         uses: actions/upload-artifact@v4
         with:
-          name: PNHKRNL-${{ matrix.target }}-zip
+          name: PNHKRNL-${{ matrix.target }}
           path: build/out/${{ matrix.target }}/*.zip
-          compression-level: 6
 
   release:
     needs: build
@@ -100,31 +82,21 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Retrieve workflow artifacts
+      - name: Retrieve artifacts
         uses: actions/download-artifact@v4
         with:
           path: raw_artifacts
 
-      - name: Consolidate build files
+      - name: Prepare release files
         run: |
           mkdir -p final_artifacts
-          if [ -d "raw_artifacts" ]; then
-            find raw_artifacts/ -name "*.zip" -exec cp {} final_artifacts/ \;
-          fi
-          echo "Prepared files for release:"
-          ls -l final_artifacts/
-
-      - name: Parse release tag
-        id: tag_parser
-        run: |
-          SAFE_TAG=$(echo "${{ github.event.inputs.tag }}" | sed 's/[\/\\:*?"<>|]/-/g')
-          echo "SAFE_TAG=$SAFE_TAG" >> $GITHUB_ENV
+          find raw_artifacts/ -name "*.zip" -exec cp {} final_artifacts/ \;
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ env.SAFE_TAG }}
-          name: "Release: ${{ env.SAFE_TAG }}"
+          tag: ${{ github.event.inputs.tag }}
+          name: "Release: ${{ github.event.inputs.tag }}"
           draft: false
           prerelease: false
           allowUpdates: true
@@ -133,18 +105,7 @@ jobs:
           artifacts: "final_artifacts/*.zip"
           body: |
             ## PNHKRNL Official Build
-            
-            Automated kernel compilation executed via GitHub Actions.
-            
-            ### Build Information
-            * **Build Number:** `${{ github.run_number }}`
-            * **Commit SHA:** `${{ github.sha }}`
-            * **Architecture:** Exynos 990 (Non-GKI)
-            * **Features:** Integrated SuSFS (Spoofed to v2.2.0)
-            
-            ### Supported Devices
-            * **Galaxy S20 Series:** x1s, x1slte, y2s, y2slte, z3s
-            * **Galaxy Note 20 Series:** c1s, c1slte, c2s, c2slte
-            * **Galaxy S20 FE:** r8s
-            
-            *Note: Please verify your exact device codename and firmware base before proceeding with the installation.*
+            * **Release Tag:** `${{ github.event.inputs.tag }}`
+            * **Kernel Identifier:** `NHKRNL`
+            * **Features:** KernelSU-Next + SuSFS v2.2.0
+            * **Target Devices:** Exynos 990 (S20 / Note 20 / S20 FE)
